@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: kirimba_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kirimba_user
+      POSTGRES_PASSWORD: kirimba_dev_password
+      POSTGRES_DB: kirimba_banking
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kirimba_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: kirimba_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # KIRIMBA API Server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kirimba_api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://kirimba_user:kirimba_dev_password@postgres:5432/kirimba_banking?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    command: npm run dev
+
+  # Prisma Studio (Database GUI)
+  prisma-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kirimba_prisma_studio
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    environment:
+      DATABASE_URL: postgresql://kirimba_user:kirimba_dev_password@postgres:5432/kirimba_banking?schema=public
+    depends_on:
+      - postgres
+    command: npx prisma studio --port 5555
+
+  # ML Model Service (Python-based credit scoring)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: kirimba_ml_service
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      FLASK_ENV: development
+      MODEL_PATH: /app/models/credit_model.pkl
+    volumes:
+      - ./ml-service:/app
+      - ml_models:/app/models
+    command: python app.py
+
+volumes:
+  postgres_data:
+  redis_data:
+  ml_models:

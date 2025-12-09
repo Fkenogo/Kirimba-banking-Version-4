@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Build output
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.production
+.env.test
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+coverage/
+.nyc_output/
+
+# Uploads (sensitive KYC documents)
+uploads/*.jpg
+uploads/*.jpeg
+uploads/*.png
+uploads/*.pdf
+# Keep the directory structure
+!uploads/.gitkeep
+
+# Database
+*.db
+*.sqlite
+
+# Prisma
+prisma/migrations/
+!prisma/migrations/.gitkeep
+
+# ML Models
+ml-service/models/*.pkl
+ml-service/models/*.h5
+ml-service/models/*.pt
+!ml-service/models/.gitkeep
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docker
+docker-compose.override.yml

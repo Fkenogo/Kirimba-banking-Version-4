@@ -1,0 +1,774 @@
+// KIRIMBA Banking System - Comprehensive Database Schema
+// Prisma Schema for PostgreSQL
+// Covers all 5 phases of user journey
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// PHASE 1: GROUP FORMATION & ONBOARDING
+// ============================================
+
+enum UserRole {
+  MEMBER
+  LEADER
+  TREASURER
+  AGENT
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING_KYC
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+enum KYCStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum RegistrationChannel {
+  USSD
+  MOBILE_APP
+  AGENT_ASSISTED
+}
+
+model User {
+  id                String      @id @default(uuid())
+  firstName         String
+  lastName          String
+  phoneNumber       String      @unique // Must be mobile money registered
+  nationalId        String?     @unique
+  email             String?
+  photoUrl          String?
+  idPhotoUrl        String?
+
+  role              UserRole    @default(MEMBER)
+  status            UserStatus  @default(PENDING_KYC)
+  kycStatus         KYCStatus   @default(PENDING)
+
+  // Mobile money details
+  mobileMoneyProvider String?   // Lumicash, EcoCash
+  mobileMoneyNumber   String?
+
+  // Authentication
+  passwordHash      String
+  pinHash           String?
+  lastLoginAt       DateTime?
+
+  // Metadata
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  registrationChannel RegistrationChannel
+
+  // Relationships
+  groupMemberships  GroupMember[]
+  ledGroups         Group[]     @relation("GroupLeader")
+  transactions      Transaction[]
+  loans             Loan[]
+  loanVotes         LoanVote[]
+  achievements      UserAchievement[]
+  notifications     Notification[]
+  literacyProgress  LiteracyProgress[]
+
+  @@index([phoneNumber])
+  @@index([nationalId])
+  @@index([status])
+}
+
+enum GroupStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+model Group {
+  id                String      @id @default(uuid())
+  groupCode         String      @unique // Short code for easy reference
+  name              String
+  description       String?
+
+  leaderId          String
+  leader            User        @relation("GroupLeader", fields: [leaderId], references: [id])
+
+  status            GroupStatus @default(PENDING)
+
+  // Group metadata
+  location          String?
+  businessType      String?     // Similar business types encouraged
+
+  // Account reference
+  groupAccountNumber String?    @unique // Partner institution account
+
+  // Targets and limits
+  targetMembers     Int         @default(6)
+  minMembers        Int         @default(6)
+  maxMembers        Int         @default(10)
+
+  // Timestamps
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  activatedAt       DateTime?
+
+  // Relationships
+  members           GroupMember[]
+  accounts          Account[]
+  loans             Loan[]
+  achievements      GroupAchievement[]
+
+  @@index([groupCode])
+  @@index([status])
+  @@index([leaderId])
+}
+
+enum GroupMemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+model GroupMember {
+  id                String            @id @default(uuid())
+  groupId           String
+  group             Group             @relation(fields: [groupId], references: [id])
+
+  userId            String
+  user              User              @relation(fields: [userId], references: [id])
+
+  status            GroupMemberStatus @default(INVITED)
+  role              UserRole          @default(MEMBER)
+
+  joinedAt          DateTime          @default(now())
+  removedAt         DateTime?
+
+  // Voting power
+  votingPower       Int               @default(1)
+
+  @@unique([groupId, userId])
+  @@index([groupId])
+  @@index([userId])
+}
+
+// ============================================
+// PHASE 2: SAVINGS ACCUMULATION
+// ============================================
+
+enum AccountType {
+  GROUP_SAVINGS       // Joint group account
+  INDIVIDUAL_SUB      // Individual tracking within group
+  LENDING_POOL        // KIRIMBA's lending capital
+  REPAYMENT           // Loan repayment collection
+}
+
+model Account {
+  id                String      @id @default(uuid())
+  accountNumber     String      @unique
+  accountType       AccountType
+
+  // For group accounts
+  groupId           String?
+  group             Group?      @relation(fields: [groupId], references: [id])
+
+  // For individual sub-accounts
+  userId            String?
+
+  // Balances (in BIF - Burundian Francs)
+  balance           Decimal     @default(0) @db.Decimal(15, 2)
+  availableBalance  Decimal     @default(0) @db.Decimal(15, 2) // Balance - locked collateral
+  lockedBalance     Decimal     @default(0) @db.Decimal(15, 2) // Locked as loan collateral
+
+  // Interest tracking
+  lastInterestDate  DateTime?
+  accruedInterest   Decimal     @default(0) @db.Decimal(15, 2)
+
+  // Partner institution integration
+  partnerAccountId  String?     // External account ID at Umuco
+
+  // Metadata
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  // Relationships
+  transactions      Transaction[]
+  collateralLocks   CollateralLock[]
+
+  @@index([accountNumber])
+  @@index([groupId])
+  @@index([userId])
+  @@index([accountType])
+}
+
+enum TransactionType {
+  DEPOSIT_MOBILE_MONEY
+  DEPOSIT_CASH
+  DEPOSIT_RECURRING
+  WITHDRAWAL
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  INTEREST_PAYMENT
+  BONUS_PAYMENT
+  TRANSFER
+  FEE
+  REVERSAL
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+model Transaction {
+  id                String            @id @default(uuid())
+  transactionRef    String            @unique // External reference
+
+  type              TransactionType
+  status            TransactionStatus @default(PENDING)
+
+  // Accounts involved
+  fromAccountId     String?
+  fromAccount       Account?          @relation(fields: [fromAccountId], references: [id])
+
+  toAccountId       String?
+
+  // User reference
+  userId            String?
+  user              User?             @relation(fields: [userId], references: [id])
+
+  // Amount
+  amount            Decimal           @db.Decimal(15, 2)
+  currency          String            @default("BIF")
+
+  // Mobile money details
+  mobileMoneyProvider String?
+  mobileMoneyTxRef  String?
+  mobileMoneyNumber String?
+
+  // Description
+  description       String?
+  metadata          Json?             // Flexible field for additional data
+
+  // Timestamps
+  createdAt         DateTime          @default(now())
+  completedAt       DateTime?
+  failedAt          DateTime?
+
+  // Error tracking
+  errorMessage      String?
+  retryCount        Int               @default(0)
+
+  @@index([transactionRef])
+  @@index([userId])
+  @@index([fromAccountId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model RecurringTransfer {
+  id                String    @id @default(uuid())
+  userId            String
+
+  amount            Decimal   @db.Decimal(15, 2)
+  frequency         String    // DAILY, WEEKLY, BIWEEKLY, MONTHLY
+  nextRunDate       DateTime
+
+  isActive          Boolean   @default(true)
+
+  // Mobile money details
+  mobileMoneyProvider String
+  mobileMoneyNumber String
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  pausedAt          DateTime?
+
+  @@index([userId])
+  @@index([nextRunDate])
+  @@index([isActive])
+}
+
+// Interest rate tiers
+model InterestRateTier {
+  id                String    @id @default(uuid())
+  minBalance        Decimal   @db.Decimal(15, 2)
+  maxBalance        Decimal?  @db.Decimal(15, 2)
+  annualRate        Decimal   @db.Decimal(5, 2) // e.g., 4.00 for 4%
+
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+
+  @@index([isActive])
+}
+
+// Milestone bonuses
+model Milestone {
+  id                String    @id @default(uuid())
+  name              String
+  description       String?
+
+  targetAmount      Decimal?  @db.Decimal(15, 2)
+  targetMonths      Int?
+
+  bonusAmount       Decimal   @db.Decimal(15, 2)
+
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+
+  achievements      GroupAchievement[]
+}
+
+// ============================================
+// PHASE 3: LOAN REQUEST & APPROVAL
+// ============================================
+
+enum LoanStatus {
+  PENDING_ASSESSMENT
+  APPROVED_INSTANT
+  PENDING_GROUP_VOTE
+  APPROVED_GROUP
+  DECLINED
+  DISBURSED
+  ACTIVE
+  OVERDUE
+  DEFAULTED
+  PAID_OFF
+  WRITTEN_OFF
+}
+
+enum LoanTerm {
+  HOURS_48
+  DAYS_7
+  DAYS_14
+  DAYS_30
+  DAYS_60
+  DAYS_90
+}
+
+model Loan {
+  id                String      @id @default(uuid())
+  loanNumber        String      @unique
+
+  userId            String
+  user              User        @relation(fields: [userId], references: [id])
+
+  groupId           String
+  group             Group       @relation(fields: [groupId], references: [id])
+
+  // Loan details
+  principal         Decimal     @db.Decimal(15, 2)
+  interestRate      Decimal     @db.Decimal(5, 2) // Cycle interest rate (e.g., 6.00 for 6%)
+  interestAmount    Decimal     @db.Decimal(15, 2)
+  totalAmount       Decimal     @db.Decimal(15, 2) // Principal + Interest
+  platformFee       Decimal     @default(0) @db.Decimal(15, 2) // 1% platform fee
+
+  term              LoanTerm
+  termDays          Int         // Actual days for the term
+
+  // Status
+  status            LoanStatus  @default(PENDING_ASSESSMENT)
+
+  // AI Credit Assessment
+  riskScore         Decimal?    @db.Decimal(3, 2) // 0.00 to 1.00
+  creditLimit       Decimal?    @db.Decimal(15, 2)
+  assessmentData    Json?       // Store full assessment details
+
+  // Approval
+  approvedAt        DateTime?
+  approvalType      String?     // INSTANT, GROUP_VOTE
+
+  // Disbursement
+  disbursedAt       DateTime?
+  disbursementRef   String?
+
+  // Repayment
+  dueDate           DateTime?
+  repaidAmount      Decimal     @default(0) @db.Decimal(15, 2)
+  paidOffAt         DateTime?
+
+  // Default handling
+  gracePeriodEnd    DateTime?
+  defaultedAt       DateTime?
+  daysOverdue       Int         @default(0)
+  lateFee           Decimal     @default(0) @db.Decimal(15, 2)
+
+  // Collateral
+  personalCollateral Decimal    @default(0) @db.Decimal(15, 2) // From borrower's savings
+  groupCollateral   Decimal     @default(0) @db.Decimal(15, 2) // From group savings
+
+  // Metadata
+  requestChannel    String      // USSD, APP, WHATSAPP
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  // Relationships
+  votes             LoanVote[]
+  repayments        LoanRepayment[]
+  collateralLocks   CollateralLock[]
+  reminders         LoanReminder[]
+
+  @@index([loanNumber])
+  @@index([userId])
+  @@index([groupId])
+  @@index([status])
+  @@index([dueDate])
+  @@index([createdAt])
+}
+
+// Group voting for loans
+model LoanVote {
+  id                String      @id @default(uuid())
+  loanId            String
+  loan              Loan        @relation(fields: [loanId], references: [id])
+
+  voterId           String
+  voter             User        @relation(fields: [voterId], references: [id])
+
+  vote              String      // YES, NO, ABSTAIN
+  comment           String?
+
+  votedAt           DateTime    @default(now())
+
+  @@unique([loanId, voterId])
+  @@index([loanId])
+}
+
+// Collateral locking
+model CollateralLock {
+  id                String      @id @default(uuid())
+
+  loanId            String
+  loan              Loan        @relation(fields: [loanId], references: [id])
+
+  accountId         String
+  account           Account     @relation(fields: [accountId], references: [id])
+
+  lockedAmount      Decimal     @db.Decimal(15, 2)
+
+  lockedAt          DateTime    @default(now())
+  releasedAt        DateTime?
+  deductedAt        DateTime?   // If loan defaults
+
+  @@index([loanId])
+  @@index([accountId])
+}
+
+// Credit score tracking
+model CreditScore {
+  id                String      @id @default(uuid())
+  userId            String      @unique
+
+  // Current score
+  currentScore      Decimal     @db.Decimal(3, 2) // 0.00 to 1.00 (lower is better)
+
+  // Score components (weights)
+  savingsBehaviorScore    Decimal @db.Decimal(3, 2) // 40% weight
+  loanHistoryScore        Decimal @db.Decimal(3, 2) // 30% weight
+  groupHealthScore        Decimal @db.Decimal(3, 2) // 20% weight
+  externalSignalsScore    Decimal @db.Decimal(3, 2) // 10% weight
+
+  // Statistics
+  totalLoans        Int         @default(0)
+  successfulLoans   Int         @default(0)
+  defaultedLoans    Int         @default(0)
+  avgDaysEarly      Int         @default(0) // Average days paid early
+
+  // Limits
+  creditLimit       Decimal     @db.Decimal(15, 2)
+  creditMultiplier  Decimal     @default(1.5) @db.Decimal(3, 2) // Increases over time
+
+  // Status
+  isSuspended       Boolean     @default(false)
+  suspendedUntil    DateTime?
+
+  lastCalculatedAt  DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@index([userId])
+}
+
+// ============================================
+// PHASE 4: REPAYMENT & MANAGEMENT
+// ============================================
+
+model LoanRepayment {
+  id                String      @id @default(uuid())
+
+  loanId            String
+  loan              Loan        @relation(fields: [loanId], references: [id])
+
+  amount            Decimal     @db.Decimal(15, 2)
+
+  // Payment details
+  paymentMethod     String      // MOBILE_MONEY, CASH_AGENT, AUTO_DEBIT
+  paymentRef        String?
+
+  paidAt            DateTime    @default(now())
+
+  @@index([loanId])
+  @@index([paidAt])
+}
+
+enum ReminderType {
+  T_MINUS_3_DAYS
+  T_MINUS_1_DAY
+  DUE_DATE
+  GRACE_PERIOD
+  DAY_3_OVERDUE
+  DAY_7_DEFAULT
+}
+
+model LoanReminder {
+  id                String        @id @default(uuid())
+
+  loanId            String
+  loan              Loan          @relation(fields: [loanId], references: [id])
+
+  reminderType      ReminderType
+
+  sentAt            DateTime      @default(now())
+  channel           String        // SMS, WHATSAPP, CALL
+
+  wasSuccessful     Boolean       @default(true)
+
+  @@index([loanId])
+  @@index([sentAt])
+}
+
+// Auto-debit authorization
+model AutoDebitAuth {
+  id                String      @id @default(uuid())
+  userId            String
+
+  isEnabled         Boolean     @default(true)
+
+  mobileMoneyProvider String
+  mobileMoneyNumber String
+
+  createdAt         DateTime    @default(now())
+  pausedAt          DateTime?
+
+  @@index([userId])
+}
+
+// ============================================
+// PHASE 5: GROWTH & ADVANCEMENT
+// ============================================
+
+enum AchievementType {
+  SAVINGS_MILESTONE
+  LOAN_REPAYMENT
+  CONSISTENCY
+  GROUP_PERFORMANCE
+  FINANCIAL_LITERACY
+}
+
+model Achievement {
+  id                String            @id @default(uuid())
+  name              String
+  description       String
+  type              AchievementType
+
+  // Criteria
+  criteriaJson      Json              // Flexible criteria definition
+
+  // Rewards
+  badgeUrl          String?
+  bonusAmount       Decimal?          @db.Decimal(15, 2)
+  creditBonus       Decimal?          @db.Decimal(15, 2)
+
+  isActive          Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+
+  userAchievements  UserAchievement[]
+  groupAchievements GroupAchievement[]
+}
+
+model UserAchievement {
+  id                String      @id @default(uuid())
+
+  userId            String
+  user              User        @relation(fields: [userId], references: [id])
+
+  achievementId     String
+  achievement       Achievement @relation(fields: [achievementId], references: [id])
+
+  awardedAt         DateTime    @default(now())
+
+  @@unique([userId, achievementId])
+  @@index([userId])
+}
+
+model GroupAchievement {
+  id                String      @id @default(uuid())
+
+  groupId           String
+  group             Group       @relation(fields: [groupId], references: [id])
+
+  achievementId     String?
+  achievement       Achievement? @relation(fields: [achievementId], references: [id])
+
+  milestoneId       String?
+  milestone         Milestone?  @relation(fields: [milestoneId], references: [id])
+
+  awardedAt         DateTime    @default(now())
+
+  @@index([groupId])
+}
+
+// Leaderboards
+model Leaderboard {
+  id                String      @id @default(uuid())
+  period            String      // MONTHLY, QUARTERLY, ANNUAL
+  periodStart       DateTime
+  periodEnd         DateTime
+
+  type              String      // TOP_SAVER, RELIABLE_BORROWER, BEST_GROUP
+
+  rankings          Json        // Array of {rank, entityId, score}
+
+  generatedAt       DateTime    @default(now())
+
+  @@index([period])
+  @@index([type])
+}
+
+// Financial literacy program
+model LiteracyModule {
+  id                String      @id @default(uuid())
+  moduleNumber      Int
+  title             String
+  description       String
+
+  // Content
+  videoUrl          String?
+  audioUrl          String?
+  textContent       String?
+
+  // Quiz
+  quizQuestions     Json        // Array of questions
+  passingScore      Int         @default(80)
+
+  // Rewards
+  completionBonus   Decimal?    @db.Decimal(15, 2)
+
+  isActive          Boolean     @default(true)
+  createdAt         DateTime    @default(now())
+
+  progress          LiteracyProgress[]
+
+  @@index([moduleNumber])
+}
+
+model LiteracyProgress {
+  id                String          @id @default(uuid())
+
+  userId            String
+  user              User            @relation(fields: [userId], references: [id])
+
+  moduleId          String
+  module            LiteracyModule  @relation(fields: [moduleId], references: [id])
+
+  status            String          // NOT_STARTED, IN_PROGRESS, COMPLETED
+
+  quizScore         Int?
+  completedAt       DateTime?
+
+  startedAt         DateTime        @default(now())
+
+  @@unique([userId, moduleId])
+  @@index([userId])
+}
+
+// ============================================
+// SYSTEM & NOTIFICATIONS
+// ============================================
+
+enum NotificationType {
+  SMS
+  PUSH
+  WHATSAPP
+  EMAIL
+  IN_APP
+}
+
+enum NotificationPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Notification {
+  id                String              @id @default(uuid())
+
+  userId            String
+  user              User                @relation(fields: [userId], references: [id])
+
+  type              NotificationType
+  priority          NotificationPriority @default(MEDIUM)
+
+  title             String
+  message           String
+
+  // Additional data
+  metadata          Json?
+
+  // Status
+  sentAt            DateTime?
+  readAt            DateTime?
+
+  createdAt         DateTime            @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Audit log for compliance
+model AuditLog {
+  id                String      @id @default(uuid())
+
+  userId            String?
+  action            String      // LOGIN, TRANSACTION, LOAN_REQUEST, etc.
+  entityType        String?     // User, Loan, Transaction, etc.
+  entityId          String?
+
+  oldValue          Json?
+  newValue          Json?
+
+  ipAddress         String?
+  userAgent         String?
+
+  createdAt         DateTime    @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// System configuration
+model SystemConfig {
+  id                String      @id @default(uuid())
+  key               String      @unique
+  value             String
+
+  description       String?
+
+  updatedAt         DateTime    @updatedAt
+
+  @@index([key])
+}
